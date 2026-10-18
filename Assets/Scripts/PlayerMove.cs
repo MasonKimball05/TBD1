@@ -1,1200 +1,402 @@
-using System.Collections;
-using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 using UnityEngine.UI;
-using static UnityEngine.InputSystem.InputAction;
 using TMPro;
 
-public class PlayerMove : MonoBehaviour
+/// <summary>
+/// Fighter controller. One instance per player; each instance only tracks its own state and
+/// talks to the other fighter through <see cref="opponent"/>.
+///
+/// Split across partial files:
+///   PlayerMove.cs         setup, per-frame update, movement, jump/dash/projectile
+///   PlayerMove.Combat.cs  attacks, blocks, damage and healing
+///   PlayerMove.Rounds.cs  knockouts, round wins, card draft, applying upgrades
+/// </summary>
+public partial class PlayerMove : MonoBehaviour
 {
-    [SerializeField] private KeyValuePair<string, int> randomEntry1;
-    [SerializeField] private KeyValuePair<string, int> randomEntry2;
-    [SerializeField] private KeyValuePair<string, int> randomEntry3;
-    [SerializeField] private Dictionary<string, int> myDictionary = new Dictionary<string, int>();
-    [SerializeField] public GameObject p1;
-    [SerializeField] public GameObject p2;
-    [SerializeField] public TextMeshProUGUI card1;
-    [SerializeField] public TextMeshProUGUI card2;
-    [SerializeField] public TextMeshProUGUI card3;
-    [SerializeField] private PlayerMove p1PlayerMove;
-    [SerializeField] private PlayerMove p2PlayerMove;
-    [SerializeField] private AttackHit attackHit;
-    [SerializeField] public GameObject HblockPlayerTrigger;
-    [SerializeField] public GameObject LblockPlayerTrigger;
-    [SerializeField] private HBlockHit HblockHit;
-    [SerializeField] private LBlockHit LblockHit;
-    [SerializeField] private Rigidbody2D rb;
-    [SerializeField] private Vector2 mover;
-    [SerializeField] private float blockTimer;
-    [SerializeField] private float hp;
-    [SerializeField] private float hpMax;
-    [SerializeField] private bool blockTimerCheck;
-    [SerializeField] private float cooldown;
-    [SerializeField] private bool busy;
-    [SerializeField] private bool animBusy;
-    [SerializeField] private float animCooldown;
-    [SerializeField] private bool gameStarted;
-    [SerializeField] private UI ui;
-    [SerializeField] public GameObject main;
-    [SerializeField] private bool P1Connected;
-    [SerializeField] private bool P2Connected;
-    [SerializeField] private bool p1HBlocked;
-    [SerializeField] private bool p2HBlocked;
-    [SerializeField] private bool p1LBlocked;
-    [SerializeField] private bool p2LBlocked;
-    [SerializeField] public int playerIndex;
-    [SerializeField] private Animator animator;
-    [SerializeField] private float HattackHitStarter;
-    [SerializeField] private float LattackHitStarter;
-    [SerializeField] private bool HattackHitCheck;
-    [SerializeField] private bool LattackHitCheck;
-    [SerializeField] public Slider p1Slider;
-    [SerializeField] public Slider p2Slider; 
-    [SerializeField] private float HblockTimerTwo;
-    [SerializeField] private bool HblockTimerCheckTwo;
-    [SerializeField] private float LblockTimerTwo;
-    [SerializeField] private bool LblockTimerCheckTwo;
-    [SerializeField] private float damage;
-    [SerializeField] private float speed;
-    [SerializeField] private float regen;
-    [SerializeField] private float NoMoveRegen;
-    [SerializeField] private float regenTime;
-    [SerializeField] private bool dictionaryAdded = false;
-    [SerializeField] private float cooldownReduction;
-    [SerializeField] private float stunTimer;
-    [SerializeField] private float range;
-    [SerializeField] private float dash;
-    [SerializeField] private bool canDash;
-    [SerializeField] private float dashDirection;
-    [SerializeField] private int roundsWon;
-    [SerializeField] public TextMeshProUGUI roundsWonText;
-    [SerializeField] private CapsuleCollider2D HAttackCollider;
-    [SerializeField] private CapsuleCollider2D LAttackCollider; 
-    [SerializeField] private float jumpForce;
-    [SerializeField] public LayerMask groundLayer;
-    [SerializeField] public Transform groundCheck;
-    [SerializeField] private bool isGrounded;
-    [SerializeField] private float moveSlow;
-    [SerializeField] private float slowTimer;
-    [SerializeField] private bool slowTimerBool;
-    [SerializeField] private float oldSpeed;
-    [SerializeField] private float plusDamageBlock;
-    [SerializeField] private float oldDamage;
-    [SerializeField] private float healOffHit;
-    [SerializeField] private float gameDamage;
-    [SerializeField] private int gamble;
-    [SerializeField] private float invisAbility;
-    [SerializeField] private float srTimer;
-    [SerializeField] private bool srTimerCheck;
-    [SerializeField] private SpriteRenderer sr;
-    [SerializeField] public GameObject circle;
-    [SerializeField] private Circle cScript;
-    [SerializeField] private float circleCooldown;
-    [SerializeField] private float self;
-    [SerializeField] private float elderDamage;
-    [SerializeField] private float slowDamage;
-    [SerializeField] private bool floater;
-    [SerializeField] private bool floatingCheck;
-    [SerializeField] private bool projectile;
-    [SerializeField] private List<int> numUnavaliable;
-    [SerializeField] private bool done;
-    [SerializeField] private bool tie;
-    [SerializeField] public AudioSource punchSound;
-    [SerializeField] public AudioSource kickSound;
-    [SerializeField] public AudioSource parrySound;
+    // Public field names are unchanged so the existing scene and prefab wiring still works.
+    [Header("Players")]
+    public int playerIndex;
+    public GameObject p1;
+    public GameObject p2;
+
+    [Header("UI")]
+    public GameObject main;
+    public Slider p1Slider;
+    public Slider p2Slider;
+    public TextMeshProUGUI roundsWonText;
+    public TextMeshProUGUI card1;
+    public TextMeshProUGUI card2;
+    public TextMeshProUGUI card3;
+
+    [Header("Ground check")]
+    public LayerMask groundLayer;
+    public Transform groundCheck;
+
+    [Header("Projectile")]
+    public GameObject circle;
+
+    [Header("Audio")]
+    public AudioSource punchSound;
+    public AudioSource kickSound;
+    public AudioSource parrySound;
+
+    [Header("Not used by this script (kept so other references don't break)")]
+    public GameObject HblockPlayerTrigger;
+    public GameObject LblockPlayerTrigger;
+
+    // ---- Tuning ----
+    private const float JumpForce = 14f;
+    private const float GroundCheckRadius = 0.2f;
+    private const float DashCooldown = 2f;
+    private const float DashBurstTime = 0.1f;
+    private const float DashSpeed = 30f;
+    private const float ProjectileCooldown = 1f;
+    private const float RegenInterval = 1f;
+    private static readonly Vector3 P1Spawn = new Vector3(-2f, 0f, 0f);
+    private static readonly Vector3 P2Spawn = new Vector3(2f, 0f, 0f);
+
+    // Child order the prefab relies on.
+    private const int HighAttackChild = 0;
+    private const int LowAttackChild = 1;
+    private const int HighBlockChild = 2;
+    private const int LowBlockChild = 3;
+    private const int SpriteChild = 4;
+
+    // ---- Cached components (set once in Awake) ----
+    private Rigidbody2D rb;
+    private Animator animator;
+    private SpriteRenderer sr;
+    private UI ui;
+    private Circle projectileLauncher;
+    private AttackHit attackHit;
+    private HBlockHit highBlockZone;
+    private LBlockHit lowBlockZone;
+    private CapsuleCollider2D highAttackCollider;
+    private CapsuleCollider2D lowAttackCollider;
+    private GameObject selfObject;
+    private GameObject opponentObject;
+    private PlayerMove opponent;
+
+    // ---- Match state (survives between rounds) ----
+    [SerializeField] private PlayerStats stats = new PlayerStats();
+    private int roundsWon;
+    private bool matchInitialized;
+
+    // ---- Round state (reset every round) ----
+    private float hp;
+    private float speed;
+    private float damage;            // current damage, includes block buffs and buildup
+    private float roundBaseDamage;   // what damage resets to after a buildup swing
+    private bool gameStarted;
+    private bool connected;
+    private bool busy;
+    private float actionCooldown;
+    private float animCooldown;
+    private Vector2 moveInput;
+    private bool slowed;
+    private float slowTimer;
+    private bool invisible;
+    private float invisibleTimer;
+    private bool floating;
+    private float dashTimer;
+    private float dashDirection;
+    private float projectileCooldown;
+    private float regenTimer;
+
+    private Slider HealthBar => playerIndex == 0 ? p1Slider : p2Slider;
+
+    // ===================================================================================
+    // Lifecycle
+    // ===================================================================================
+
+    private void Awake()
+    {
+        rb = GetComponent<Rigidbody2D>();
+
+        Transform spriteChild = transform.GetChild(SpriteChild);
+        sr = spriteChild.GetComponent<SpriteRenderer>();
+        animator = spriteChild.GetComponent<Animator>();
+
+        attackHit = transform.GetChild(HighAttackChild).GetComponent<AttackHit>();
+        highAttackCollider = transform.GetChild(HighAttackChild).GetComponent<CapsuleCollider2D>();
+        lowAttackCollider = transform.GetChild(LowAttackChild).GetComponent<CapsuleCollider2D>();
+        highBlockZone = transform.GetChild(HighBlockChild).GetComponent<HBlockHit>();
+        lowBlockZone = transform.GetChild(LowBlockChild).GetComponent<LBlockHit>();
+
+        ui = main.GetComponent<UI>();
+        projectileLauncher = circle.GetComponent<Circle>();
+
+        selfObject = playerIndex == 0 ? p1 : p2;
+        opponentObject = playerIndex == 0 ? p2 : p1;
+        opponent = opponentObject.GetComponent<PlayerMove>();
+    }
+
+    /// <summary>
+    /// Unity calls this once, and the round flow calls it again to reset for the next round.
+    /// Kept public with the same name because other scripts call it.
+    /// </summary>
     public void Start()
     {
-        if (dictionaryAdded == false)
-        {
-            numUnavaliable = new List<int>();
-            myDictionary = new Dictionary<string, int>();
-            healOffHit = 0f;
-            roundsWon = 0;
-            speed = 5f;
-            oldSpeed = speed;
-            damage = 1f;
-            oldDamage = damage;
-            hpMax = 5f;
-            regen = 0;
-            NoMoveRegen = 0;
-            cooldownReduction = 0;
-            stunTimer = 1.2f;
-            range = 0f;
-            dash = 0;
-            moveSlow = 0f;
-            canDash = false;
-            plusDamageBlock = 0f;
-            gamble = 0;
-            invisAbility = 0f;
-            self = 0f;
-            slowDamage = 0f;
-            floater = false;
-            floatingCheck = false;
-            projectile = false;
-            myDictionary.Add("Damage", 0);
-            myDictionary.Add("Health", 1);
-            myDictionary.Add("Speed", 2);
-            myDictionary.Add("Regen", 3);
-            myDictionary.Add("Still\nRegen", 4);
-            myDictionary.Add("Faster\nCooldown", 5);
-            myDictionary.Add("Block\nStun", 6);
-            myDictionary.Add("Range", 7);
-            myDictionary.Add("Slowing\nPunches", 8);
-            myDictionary.Add("Dash", 9);
-            myDictionary.Add("Block\nBuffs\nDamage", 10);
-            myDictionary.Add("Vampirism", 11);
-            myDictionary.Add("Gambling", 12);
-            myDictionary.Add("Attacking\nInvisibility", 13);
-            myDictionary.Add("Self\nDamage\nSuperhuman", 14);
-            myDictionary.Add("Damage\nBuildup", 15);
-            myDictionary.Add("Floating\nJump", 16);
-            myDictionary.Add("Projectile", 17);
-            dictionaryAdded = true;
-        }
-        tie = false;
-        done = false;
-        damage = oldDamage;
-        gameDamage = damage;
-        elderDamage = damage;
-        speed = oldSpeed;
-        slowTimer = 0f;
-        slowTimerBool = false;
-        srTimerCheck = false;
-        roundsWonText.text = "" + roundsWon;
-        jumpForce = 14f;
-        cooldown = 0f;
-        animCooldown = 0f;
-        circleCooldown = 0f;
-        hp = hpMax;
-        regenTime = 1f;
-        p1HBlocked = false;
-        p2HBlocked = false;
-        p1LBlocked = false;
-        p2LBlocked = false;
-        blockTimerCheck = false;
-        HattackHitStarter = 0f;
-        LattackHitStarter = 0f;
-        HattackHitCheck = false;
-        LattackHitCheck = false;
-        blockTimer = 0f;
-        sr = gameObject.transform.GetChild(4).GetComponent<SpriteRenderer>();
-        animator = gameObject.transform.GetChild(4).GetComponent<Animator>();
-        sr.enabled = true;
-        P1Connected = false;
-        P2Connected = false;
+        if (!matchInitialized)
+            InitializeMatch();
+        ResetRound();
+    }
+
+    /// <summary>Makes the next Start() wipe all upgrades and wins (new match).</summary>
+    public void ChangeDictionary() => matchInitialized = false;
+
+    private void InitializeMatch()
+    {
+        stats = new PlayerStats();
+        roundsWon = 0;
+        matchInitialized = true;
+    }
+
+    private void ResetRound()
+    {
+        hp = stats.maxHp;
+        speed = stats.speed;
+        damage = stats.damage;
+        roundBaseDamage = damage;
+
+        roundOver = false;
         gameStarted = false;
-        p1PlayerMove = p1.GetComponent<PlayerMove>();
-        p2PlayerMove = p2.GetComponent<PlayerMove>();
-        HAttackCollider = gameObject.transform.GetChild(0).GetComponent<CapsuleCollider2D>();
-        HAttackCollider.size = new Vector2(0.4336568f + range, 0.04112294f);
-        LAttackCollider = gameObject.transform.GetChild(1).GetComponent<CapsuleCollider2D>();
-        LAttackCollider.size = new Vector2(0.9560172f + range, 0.3665857f);
-        ui = main.GetComponent<UI>();
-        rb = gameObject.GetComponent<Rigidbody2D>();
-        attackHit = gameObject.transform.GetChild(0).GetComponent<AttackHit>();
-        HblockHit = gameObject.transform.GetChild(2).GetComponent<HBlockHit>();
-        LblockHit = gameObject.transform.GetChild(3).GetComponent<LBlockHit>();
-        cScript = circle.GetComponent<Circle>();
+        connected = false;
         busy = false;
+        actionCooldown = 0f;
+        animCooldown = 0f;
+        slowed = false;
+        slowTimer = 0f;
+        invisible = false;
+        invisibleTimer = 0f;
+        sr.enabled = true;
+        floating = false;
+        dashTimer = 0f;
+        projectileCooldown = 0f;
+        regenTimer = RegenInterval;
+        ResetCombatState();
+
+        highAttackCollider.size = new Vector2(HighAttackBaseLength + stats.range, HighAttackThickness);
+        lowAttackCollider.size = new Vector2(LowAttackBaseLength + stats.range, LowAttackThickness);
+
+        roundsWonText.text = roundsWon.ToString();
+        transform.position = playerIndex == 0 ? P1Spawn : P2Spawn;
+        HealthBar.maxValue = hp;
+        UpdateHealthBar();
         animator.Play("Idle");
-        if (playerIndex == 0)
-        {
-            gameObject.transform.position = new Vector3(-2, 0, 0);
-            p1Slider.maxValue = hp;
-            p1Slider.value = hp;
-        }
-        if (playerIndex == 1)
-        {
-            gameObject.transform.position = new Vector3(2, 0, 0);
-            p2Slider.maxValue = hp;
-            p2Slider.value = hp;
-        }
     }
-    public void ChangeDictionary()
+
+    private void Update()
     {
-        dictionaryAdded = false;
+        float dt = Time.deltaTime;
+
+        UpdateGrounded();
+        UpdateSlow(dt);
+        CheckForKnockout();
+        UpdateInvisibility(dt);
+        FaceOpponent();
+        UpdateBlocks(dt);
+        UpdateMovement(dt);
+        UpdateAnimBusy(dt);
+        UpdateAttacks(dt);
+        UpdateRegen(dt);
+        UpdateFloatAndDash(dt);
+        projectileCooldown -= dt;
     }
-    public void RoundStart()
-    {
-        gameStarted = true;
-    }
-    public bool P1Player()
-    {
-        if(playerIndex == 0)
-        {
-            if(P1Connected)
-            {
-                return true;
-            }
-            return false;
-        }
-        return false;
-    }
-    public bool P2Player()
-    {
-        if(playerIndex == 1)
-        {
-            if(P2Connected)
-                return true;
-            return false;
-        }
-        return false;
-    }
-    public int GetPlayerIndex()
-    {
-        return playerIndex;
-    }
+
+    // ===================================================================================
+    // Simple queries used by other scripts
+    // ===================================================================================
+
+    public void RoundStart() => gameStarted = true;
+    public int GetPlayerIndex() => playerIndex;
+    public bool IsBusy() => busy;
+    public float CheckHP() => hp;
+    public bool P1Player() => playerIndex == 0 && connected;
+    public bool P2Player() => playerIndex == 1 && connected;
+
+    // ===================================================================================
+    // Input handlers
+    // ===================================================================================
+
     public void Moving(Vector2 moveDirection)
     {
         if (gameStarted)
-        {
-            mover = moveDirection;
-        }
+            moveInput = moveDirection;
     }
-    public void Dash()
-    {
-        if(rb.velocity.x != 0f && canDash && dash <=0f)
-        {
-            animator.SetTrigger("dash");
-            dashDirection = rb.velocity.x / Mathf.Abs(rb.velocity.x);
-            dash = 2f;
-        }
-    }
-    public void Circle()
-    {
-        if(gameStarted && projectile)
-        {
-            if(playerIndex == 0)
-            {
-                if(circleCooldown <= 0)
-                {
-                    animator.SetTrigger("circle");
-                    cScript.Shoot(p1.transform, 0, p2);
-                    circleCooldown = 1f;
-                }
-            }
-            else if(playerIndex == 1)
-            {
-                if(circleCooldown <= 0)
-                {
-                    animator.SetTrigger("circle");
-                    cScript.Shoot(p2.transform, 180, p1);
-                    circleCooldown = 1f;
-                }
-            }
-        }
 
-            
-    }
     public void Jump()
     {
-        isGrounded = Physics2D.OverlapCircle(groundCheck.position, 0.2f, groundLayer);
-        if(isGrounded)
+        if (CheckGrounded())
         {
             animator.SetBool("isGrounded", false);
             animator.SetTrigger("jump");
-            rb.velocity = new Vector2(rb.velocity.x, jumpForce);
+            rb.velocity = new Vector2(rb.velocity.x, JumpForce);
         }
-        if(floater)
-        {
-            floatingCheck = true;
-        }
+        if (stats.canFloat)
+            floating = true;
     }
-    public void AttackHigh()
+
+    /// <summary>Called when the jump ends (animation event).</summary>
+    public void JumpEnd() => floating = false;
+
+    public void Dash()
     {
-        if(gameStarted)
-        {
-            animator.SetTrigger("attackhigh");
-            HattackHitStarter = 5/12f - cooldownReduction/2;
-            HattackHitCheck = true;
-            busy = true;
-            animBusy = true;
-            animator.SetBool("busy", animBusy);
-            cooldown = 5/6f - cooldownReduction;
-            animCooldown = 5/6f - cooldownReduction;
-        }
+        if (!stats.canDash || dashTimer > 0f || rb.velocity.x == 0f)
+            return;
+
+        animator.SetTrigger("dash");
+        dashDirection = Mathf.Sign(rb.velocity.x);
+        dashTimer = DashCooldown;
     }
-    public void AttackLow()
+
+    public void Circle()
     {
-        if(playerIndex == 0)
-        {
-            P1Connected = true;
-        }
-        if(playerIndex == 1)
-        {
-            P2Connected = true;
-        }
-        if(gameStarted)
-        {
-            animator.SetTrigger("attacklow");
-            LattackHitStarter = 5/12f - cooldownReduction/2;
-            LattackHitCheck = true;
-            busy = true;
-            animBusy = true;
-            animator.SetBool("busy", animBusy);
-            cooldown = 5/6f - cooldownReduction;
-            animCooldown = 5/6f - cooldownReduction;
-        }
+        if (!gameStarted || !stats.hasProjectile || projectileCooldown > 0f)
+            return;
+
+        animator.SetTrigger("circle");
+        projectileLauncher.Shoot(selfObject.transform, playerIndex == 0 ? 0 : 180, opponentObject);
+        projectileCooldown = ProjectileCooldown;
     }
-    public void BlockHigh()
-    {
-        if(gameStarted)
-        {
-            if(playerIndex == 0)
-            {
-                if(HblockHit.P1Block() && p2PlayerMove.IsHAttacking())
-                {
-                    p1HBlocked = true;
-                    blockTimer = 2/3f;
-                    blockTimerCheck = true;
-                }
-                else
-                {
-                    HblockTimerTwo = .25f;
-                    HblockTimerCheckTwo  = true;
-                }
-            }
-            if(playerIndex == 1)
-            {
-                if(HblockHit.P2Block() && p1PlayerMove.IsHAttacking())
-                {
-                    p2HBlocked = true;
-                    blockTimer = 2/3f;
-                    blockTimerCheck = true;
-                }
-                else
-                {
-                    HblockTimerTwo = .25f;
-                    HblockTimerCheckTwo  = true;
-                }
-            }
-            animator.SetTrigger("blockhigh");
-            busy = true;
-            animBusy = true;
-            animator.SetBool("busy", animBusy);
-            cooldown = 2/3f - cooldownReduction;
-            animCooldown = 2/3f - cooldownReduction;
-        }
-    }
-    public void BlockLow()
-    {
-        if(gameStarted)
-        {
-            if(playerIndex == 0)
-            {
-                if(LblockHit.P1Block() && p2PlayerMove.IsLAttacking())
-                {
-                    p1LBlocked = true;
-                    blockTimer = 2/3f;
-                    blockTimerCheck = true;
-                }
-                else
-                {
-                    LblockTimerTwo = .25f;
-                    LblockTimerCheckTwo  = true;
-                }
-            }
-            if(playerIndex == 1)
-            {
-                if(LblockHit.P2Block() && p1PlayerMove.IsLAttacking())
-                {
-                    p2LBlocked = true;
-                    blockTimer = 2/3f;
-                    blockTimerCheck = true;
-                } 
-                else
-                {
-                    LblockTimerTwo = .25f;
-                    LblockTimerCheckTwo  = true;
-                }
-            }
-            animator.SetTrigger("blocklow");
-            busy = true;
-            animBusy = true;
-            animator.SetBool("busy", animBusy);
-            cooldown = 2/3f - cooldownReduction;
-            animCooldown = 2/3f - cooldownReduction;
-        }
-    }
-    public bool IsHBlocking()
-    {
-        if(playerIndex == 0)
-        {
-            return p1HBlocked;
-        }
-        if(playerIndex == 1)
-        {
-            return p2HBlocked;
-        }
-        return false;
-    }
-    public bool IsLBlocking()
-    {
-        if(playerIndex == 0)
-        {
-            return p1LBlocked;
-        }
-        if(playerIndex == 1)
-        {
-            return p2LBlocked;
-        }
-        return false;
-    }
-    public void GotHit(float dmg)
-    {
-        hp -= dmg;
-        if(playerIndex == 0)
-        {
-            p1Slider.value = hp;
-        }
-        if(playerIndex == 1)
-        {
-            p2Slider.value = hp;
-        }
-    }
-    public bool IsHAttacking()
-    {
-        return HattackHitCheck;
-    }
-    public bool IsLAttacking()
-    {
-        return LattackHitCheck;
-    }
-    public bool IsBusy()
-    {
-        return busy;
-    }
+
     public void Pauser()
     {
-        if (gameStarted)
-        {
-            ui.Pause();
-            busy = true;
-            animBusy = true;
-        }
-    }
-    private void Invisible()
-    {
-        if (sr != null)
-        {
-            sr.enabled = false;
-            srTimerCheck = true;
-            srTimer = invisAbility;
-        }
-    }
-    private void Gambler()
-    {
-        gameDamage = damage;
-        int randomInt1 = Random.Range(1, 5 * gamble);
-        int randomInt2 = Random.Range(1, 11);
-        if (randomInt2 < 3)
-        {
-            damage = damage * randomInt1;
-        }
-        else
-        {
-            damage = damage / randomInt1;
-        }
-    }
-    public void CardsUI()
-    {
-        int randomInt1 = Random.Range(0, 18);
-        bool validNum = false;
-        while (validNum == false)
-        {
-            validNum = true;
-            randomInt1 = Random.Range(0, 18);
-            foreach (int n in numUnavaliable)
-            {
-                if (randomInt1 == n)
-                {
-                    validNum = false;
-                }
-            }
-        }
-        int randomInt2 = Random.Range(0, 18);
-        validNum = false;
-        while (validNum == false || randomInt2 == randomInt1)
-        {
-            validNum = true;
-            randomInt2 = Random.Range(0, 18);
-            foreach (int n in numUnavaliable)
-            {
-                if (randomInt2 == n)
-                {
-                    validNum = false;
-                }
-            }
-        }
-        int randomInt3 = Random.Range(0, 18);
-        validNum = false;
-        while (validNum == false || randomInt3 == randomInt1 || randomInt3 == randomInt2)
-        {
-            validNum = true;
-            randomInt3 = Random.Range(0, 18);
-            foreach (int n in numUnavaliable)
-            {
-                if (randomInt3 == n)
-                {
-                    validNum = false;
-                }
-            }
-        }
-        foreach (KeyValuePair<string, int> kvp in myDictionary)
-        {
-            if (randomInt1 == kvp.Value)
-                randomEntry1 = kvp;
-            if (randomInt2 == kvp.Value)
-                randomEntry2 = kvp;
-            if (randomInt3 == kvp.Value)
-                randomEntry3 = kvp;
-        }
-        card1.text = $"{randomEntry1.Key}";
-        card2.text = $"{randomEntry2.Key}";
-        card3.text = $"{randomEntry3.Key}";
-    }
-    public bool RoundWin()
-    {
-        roundsWon++;
-        roundsWonText.text = "" + roundsWon;
+        if (!gameStarted)
+            return;
+        ui.Pause();
         busy = true;
-        animBusy = true;
-        if (roundsWon >= ui.RoundMax())
-        {
-            if (playerIndex == 0)
-            {
-                ui.P1Win();
-            }
-            if (playerIndex == 1)
-            {
-                ui.P2Win();
-            }
-            return false;
-        }
-        else
-        {
-            return true;
-        }
     }
-    public void StunTime(float stun)
-    {
-        stunTimer += stun;
 
-    }
-    public void SlowMovement(float seconds)
-    {
-        if (slowTimerBool == false)
-            oldSpeed = speed;
-        speed = speed / 2;
-        slowTimer = seconds;
-        slowTimerBool = true;
-    }
-    public void DamageBlock()
-    {
-        damage += plusDamageBlock;
-        elderDamage = damage;
-    }
-    private void BuildingDamage()
-    {
-        damage *= slowDamage;
-    }
-    public void JumpEnd()
-    {
-        if(floater)
-            floatingCheck = false;
-    }
-    public void SubtractWin()
-    {
-        roundsWon--;
-        roundsWonText.text = "" + roundsWon;
-    }
-    public float CheckHP()
-    {
-        return hp;
-    }
-    public void DoubleDeath()
-    {
-        done = true;
-        tie = true;
-    }
-    void Update()
-    {
-        slowTimer -= Time.deltaTime;
-        isGrounded = Physics2D.OverlapCircle(groundCheck.position, 0.2f, groundLayer);
-        if(isGrounded == true)
-        {
-            animator.SetBool("isGrounded", true);
-        }
-        else
-        {
-            animator.SetBool("isGrounded", false);
-        }
-        if(slowTimerBool == true && slowTimer <= 0)
-        {
-            speed = oldSpeed;
-            slowTimerBool = false;
-        }
-        if (hp <= 0)
-        {
-            if (done == false)
-            {
-                if (playerIndex == 0)
-                {
-                    if (p2PlayerMove.CheckHP() <= 0)
-                    {
-                        ui.TieGame();
-                        p2PlayerMove.DoubleDeath();
-                        tie = true;
-                    }
-                }
-                if (playerIndex == 1)
-                {
-                    if (p1PlayerMove.CheckHP() <= 0)
-                    {
-                        ui.TieGame();
-                        p1PlayerMove.DoubleDeath();
-                        tie = true;
-                    }
-                }
-                if (tie == false)
-                {
-                    CardsUI();
-                    if (playerIndex == 0)
-                    {
-                        if (p2PlayerMove.RoundWin())
-                        {
-                            ui.P1Round();
-                        }
-                    }
-                    if (playerIndex == 1)
-                    {
-                        if (p1PlayerMove.RoundWin())
-                        {
-                            ui.P2Round();
-                        }
-                    }
-                }
-                done = true;
-            }
-        }
-        srTimer -= Time.deltaTime;
-        if (srTimerCheck = true && srTimer <= 0)
-        {
-            sr.enabled = true;
-            srTimerCheck = false;
-        }
-        if (playerIndex == 0)
-        {
-            if (p2.transform.position.x < gameObject.transform.position.x)
-            {
-                Vector3 currentRotation = transform.eulerAngles;
-                currentRotation.y = 180f;
-                transform.eulerAngles = currentRotation;
-            }
-            if (p2.transform.position.x > gameObject.transform.position.x)
-            {
-                Vector3 currentRotation = transform.eulerAngles;
-                currentRotation.y = 0f;
-                transform.eulerAngles = currentRotation;
-            }
-        }
-        if (playerIndex == 1)
-        {
-            if (p1.transform.position.x > gameObject.transform.position.x)
-            {
-                Vector3 currentRotation = transform.eulerAngles;
-                currentRotation.y = 180f;
-                transform.eulerAngles = currentRotation;
-            }
-            if (p1.transform.position.x < gameObject.transform.position.x)
-            {
-                Vector3 currentRotation = transform.eulerAngles;
-                currentRotation.y = 0f;
-                transform.eulerAngles = currentRotation;
-            }
-        }
-        blockTimer -= Time.deltaTime;
-        if (blockTimer <= 0 && blockTimerCheck == true)
-        {
-            blockTimerCheck = false;
-            blockTimer = 0;
-            if (playerIndex == 0)
-            {
-                p1HBlocked = false;
-            }
-            if (playerIndex == 1)
-            {
-                p2HBlocked = false;
-            }
-            if (playerIndex == 0)
-            {
-                p1LBlocked = false;
-            }
-            if (playerIndex == 1)
-            {
-                p2LBlocked = false;
-            }
-        }
-        HblockTimerTwo -= Time.deltaTime;
-        if (HblockTimerTwo <= 0 && HblockTimerCheckTwo)
-        {
-            HblockTimerCheckTwo = false;
-            HblockTimerTwo = 0f;
-            if (playerIndex == 0)
-            {
-                if (HblockHit.P1Block() && p2PlayerMove.IsHAttacking())
-                {
-                    p1HBlocked = true;
-                    blockTimer = .95f;
-                    blockTimerCheck = true;
-                }
-            }
-            if (playerIndex == 1)
-            {
-                if (HblockHit.P2Block() && p1PlayerMove.IsHAttacking())
-                {
-                    p2HBlocked = true;
-                    blockTimer = .95f;
-                    blockTimerCheck = true;
-                }
-            }
-        }
-        LblockTimerTwo -= Time.deltaTime;
-        if (LblockTimerTwo <= 0 && LblockTimerCheckTwo)
-        {
-            LblockTimerCheckTwo = false;
-            LblockTimerTwo = 0f;
-            if (playerIndex == 0)
-            {
-                if (LblockHit.P1Block() && p2PlayerMove.IsLAttacking())
-                {
-                    p1LBlocked = true;
-                    blockTimer = .95f;
-                    blockTimerCheck = true;
-                }
-            }
-            if (playerIndex == 1)
-            {
-                if (LblockHit.P2Block() && p1PlayerMove.IsLAttacking())
-                {
-                    p2LBlocked = true;
-                    blockTimer = .95f;
-                    blockTimerCheck = true;
-                }
-            }
-        }
-        cooldown -= Time.deltaTime;
-        if (0f >= cooldown && Time.timeScale == 1f)
-        {
-            rb.velocity = new Vector2(mover.x*speed, rb.velocity.y);
+    // ===================================================================================
+    // Per-frame helpers
+    // ===================================================================================
 
-            if(mover.x == 0)
-            {
-                animator.SetBool("walking 0", false);
-                animator.SetBool("walk back 0", false);
-            }
-            else if (mover.x > 0)
-            {
-                animator.SetBool("walking 0", true);
-                animator.SetBool("walk back 0", false);
-            }
-            else if (mover.x < 0)
-            {
-                animator.SetBool("walking 0", false);
-                animator.SetBool("walk back 0", true);
-            }
+    private bool CheckGrounded()
+    {
+        return Physics2D.OverlapCircle(groundCheck.position, GroundCheckRadius, groundLayer) != null;
+    }
+
+    private void UpdateGrounded()
+    {
+        animator.SetBool("isGrounded", CheckGrounded());
+    }
+
+    private void FaceOpponent()
+    {
+        float dx = opponentObject.transform.position.x - transform.position.x;
+        if (dx == 0f)
+            return;
+
+        // P1's sprite faces right by default and P2's faces left, so they flip on opposite sides.
+        bool opponentOnLeft = dx < 0f;
+        bool flip = playerIndex == 0 ? opponentOnLeft : !opponentOnLeft;
+
+        Vector3 rotation = transform.eulerAngles;
+        rotation.y = flip ? 180f : 0f;
+        transform.eulerAngles = rotation;
+    }
+
+    private void UpdateMovement(float dt)
+    {
+        actionCooldown -= dt;
+        bool canMove = actionCooldown <= 0f && Time.timeScale == 1f;
+
+        if (canMove)
+        {
+            rb.velocity = new Vector2(moveInput.x * speed, rb.velocity.y);
             busy = false;
-            cooldown = 0;
+            actionCooldown = 0f;
         }
         else
         {
-            rb.velocity = new Vector2(0, rb.velocity.y);
-            animator.SetBool("walking 0", false);
-            animator.SetBool("walk back 0", false);
+            rb.velocity = new Vector2(0f, rb.velocity.y);
         }
-        animCooldown -= Time.deltaTime;
+
+        float walk = canMove ? moveInput.x : 0f;
+        animator.SetBool("walking 0", walk > 0f);
+        animator.SetBool("walk back 0", walk < 0f);
+    }
+
+    private void UpdateAnimBusy(float dt)
+    {
+        animCooldown -= dt;
         if (animCooldown <= 0f)
         {
             animCooldown = 0f;
-            animBusy = false;
-            animator.SetBool("busy", animBusy);
+            animator.SetBool("busy", false);
         }
-        HattackHitStarter -= Time.deltaTime;
-        if (HattackHitStarter <= 0 && HattackHitCheck)
-        {
-            HattackHitStarter = 0;
-            HattackHitCheck = false;
-            if (playerIndex == 0)
-            {
-                if (attackHit.P1Hit())
-                {
-                    hp -= self;
-                    p1Slider.value = hp;
-                    if (p2PlayerMove.IsHBlocking())
-                    {
-                        cooldown = stunTimer;
-                        p2PlayerMove.DamageBlock();
-                        parrySound.Play();
-                    }
-                    else
-                    {
-                        punchSound.Play();
-                        if (slowDamage > 0)
-                        {
-                            damage = damage / 10;
-                        }
-                        if (invisAbility > 0)
-                        {
-                            Invisible();
-                        }
-                        if (gamble > 0)
-                        {
-                            Gambler();
-                        }
-                        p2PlayerMove.GotHit(damage);
-                        if (healOffHit > 0)
-                        {
-                            hp += healOffHit;
-                            if (hp > hpMax) hp = hpMax;
-                            p1Slider.value = hp;
-                        }
-                        if (moveSlow > 0)
-                        {
-                            
-                            p2PlayerMove.SlowMovement(moveSlow);
-                        }
-                    }
-                    if (slowDamage > 0)
-                    {
-                        damage = elderDamage;
-                    }
-                    else if (gamble > 0)
-                    {
-                        damage = gameDamage;
-                    }
-                }
-                if (slowDamage > 0)
-                {
-                    damage = elderDamage;
-                }
-            }
-            if (playerIndex == 1)
-            {
-                if (attackHit.P2Hit())
-                {
-                    hp -= self;
-                    p2Slider.value = hp;
-                    if (p1PlayerMove.IsHBlocking())
-                    {
-                        cooldown = stunTimer;
-                        p1PlayerMove.DamageBlock();
-                        parrySound.Play();
-                    }
-                    else
-                    {
-                        punchSound.Play();
-                        if (slowDamage > 0)
-                        {
-                            damage = damage / 10;
-                        }
-                        if (invisAbility > 0)
-                        {
-                            Invisible();
-                        }
-                        if (gamble > 0)
-                        {
-                            Gambler();
-                        }
-                        p1PlayerMove.GotHit(damage);
-                        if (healOffHit > 0)
-                        {
-                            hp += healOffHit;
-                            if (hp > hpMax) hp = hpMax;
-                            p2Slider.value = hp;
-                        }
-                        if (moveSlow > 0)
-                        {
-                            p1PlayerMove.SlowMovement(moveSlow);
-                        }
-                    }
-                    if (slowDamage > 0)
-                    {
-                        damage = elderDamage;
-                    }
-                    else if (gamble > 0)
-                    {
-                        damage = gameDamage;
-                    }
-                }
-                if (slowDamage > 0)
-                {
-                    damage = elderDamage;
-                }
-            }
-        }
-        LattackHitStarter -= Time.deltaTime;
-        if (LattackHitStarter <= 0 && LattackHitCheck)
-        {
-            LattackHitStarter = 0;
-            LattackHitCheck = false;
-            if (playerIndex == 0)
-            {
-                if (attackHit.P1Hit())
-                {
-                    hp -= self;
-                    p1Slider.value = hp;
-                    if (p2PlayerMove.IsLBlocking())
-                    {
-                        cooldown = stunTimer;
-                        p2PlayerMove.DamageBlock();
-                        parrySound.Play();
-                    }
-                    else
-                    {
-                        kickSound.Play();
-                        if (slowDamage > 0)
-                        {
-                            damage = damage / 10;
-                        }
-                        if (invisAbility > 0)
-                        {
-                            Invisible();
-                        }
-                        if (gamble > 0)
-                        {
-                            Gambler();
-                        }
-                        p2PlayerMove.GotHit(damage);
-                        if (healOffHit > 0)
-                        {
-                            hp += healOffHit;
-                            if (hp > hpMax) hp = hpMax;
-                            p1Slider.value = hp;
-                        }
-                        if (moveSlow > 0)
-                        {
-                            p2PlayerMove.SlowMovement(moveSlow);
-                        }
-                    }
-                    if (slowDamage > 0)
-                    {
-                        damage = elderDamage;
-                    }
-                    else if (gamble > 0)
-                    {
-                        damage = gameDamage;
-                    }
-                }
-                if (slowDamage > 0)
-                {
-                    damage = elderDamage;
-                }
-            }
-            if (playerIndex == 1)
-            {
-                if (attackHit.P2Hit())
-                {
-                    hp -= self;
-                    p2Slider.value = hp;
-                    if (p1PlayerMove.IsLBlocking())
-                    {
-                        cooldown = stunTimer;
-                        p1PlayerMove.DamageBlock();
-                        parrySound.Play();
-                    }
-                    else
-                    {
-                        kickSound.Play();
-                        if (slowDamage > 0)
-                        {
-                            damage = damage / 10;
-                        }
-                        if (invisAbility > 0)
-                        {
-                            Invisible();
-                        }
-                        if (gamble > 0)
-                        {
-                            Gambler();
-                        }
-                        p1PlayerMove.GotHit(damage);
-                        if (healOffHit > 0)
-                        {
-                            hp += healOffHit;
-                            if (hp > hpMax) hp = hpMax;
-                            p2Slider.value = hp;
-                        }
-                        if (moveSlow > 0)
-                        {
-                            p1PlayerMove.SlowMovement(moveSlow);
-                        }
-                    }
-                    if (slowDamage > 0)
-                    {
-                        damage = elderDamage;
-                    }
-                    else if (gamble > 0)
-                    {
-                        damage = gameDamage;
-                    }
-                }
-                if (slowDamage > 0)
-                {
-                    damage = elderDamage;
-                }
-            }
-        }
-
-        regenTime -= Time.deltaTime;
-        if (regenTime <= 0f)
-        {
-            hp += regen;
-            if (rb.velocity.x == 0)
-            {
-                hp += NoMoveRegen;
-            }
-            if (hp > hpMax) hp = hpMax;
-
-            if (playerIndex == 0)
-            {
-                p1Slider.value = hp;
-            }
-            if (playerIndex == 1)
-            {
-                p2Slider.value = hp;
-            }
-            if (slowDamage > 0)
-            {
-                BuildingDamage();
-            }
-            regenTime = 1f;
-        }
-        if(floatingCheck && rb.velocity.y <= 0)
-        {
-            rb.velocity = new Vector2(rb.velocity.x, 0f);
-        }
-        if (dash > 1.9f)
-        {
-            rb.velocity = new Vector2(30f * dashDirection, 0f);
-        }
-        dash -= Time.deltaTime;
-        circleCooldown -= Time.deltaTime;
     }
-    public void AbilitiesChooser(int cardChoosen)
+
+    /// <summary>Locks movement and actions for <paramref name="duration"/> seconds.</summary>
+    private void EnterBusy(float duration)
     {
-        int ability = 0;
-        if (cardChoosen == 1)
+        busy = true;
+        animator.SetBool("busy", true);
+        actionCooldown = duration;
+        animCooldown = duration;
+    }
+
+    public void SlowMovement(float seconds)
+    {
+        speed /= 2f;   // stacks if hit again while already slowed
+        slowTimer = seconds;
+        slowed = true;
+    }
+
+    private void UpdateSlow(float dt)
+    {
+        slowTimer -= dt;
+        if (slowed && slowTimer <= 0f)
         {
-            ability = randomEntry1.Value;
+            speed = stats.speed;
+            slowed = false;
         }
-        else if (cardChoosen == 2)
+    }
+
+    private void GoInvisible()
+    {
+        sr.enabled = false;
+        invisible = true;
+        invisibleTimer = stats.invisDuration;
+    }
+
+    private void UpdateInvisibility(float dt)
+    {
+        if (!invisible)
+            return;
+        invisibleTimer -= dt;
+        if (invisibleTimer <= 0f)
         {
-            ability = randomEntry2.Value;
+            sr.enabled = true;
+            invisible = false;
         }
-        else if(cardChoosen == 3)
-        {
-            ability = randomEntry3.Value;
-        }
-        if (ability == 0)
-        {
-            damage += .5f;
-            oldDamage = damage;
-        }
-        if (ability == 1)
-            hpMax += 2f;
-        if (ability == 2)
-        {
-            speed *= 1.5f;
-            oldSpeed = speed;
-        }
-        if (ability == 3)
-            regen += 0.15f;
-        if (ability == 4)
-            NoMoveRegen += 0.3f;
-        if (ability == 5)
-            cooldownReduction += 0.15f;
-        if (ability == 6)
-        {
-            if (playerIndex == 0)
-            {
-                p2PlayerMove.StunTime(.4f);
-            }
-            if (playerIndex == 1)
-            {
-                p1PlayerMove.StunTime(.4f);
-            }
-        }
-        if (ability == 7)
-            range += 0.4f;
-        if (ability == 8)
-            moveSlow += 3f;
-        if (ability == 9)
-        {
-            canDash = true;
-            numUnavaliable.Add(9);
-        }
-            
-        if (ability == 10)
-            plusDamageBlock += .25f;
-        if (ability == 11)
-        {
-            damage -= .25f;
-            oldDamage = damage;
-            healOffHit = .4f;
-        }
-        if (ability == 12)
-        {
-            gamble += 1;
-        }
-        if (ability == 13)
-        {
-            invisAbility += .5f;
-        }
-        if (ability == 14)
-        {
-            self += .3f;
-            if (playerIndex == 0)
-            {
-                p2PlayerMove.StunTime(.6f);
-            }
-            if (playerIndex == 1)
-            {
-                p1PlayerMove.StunTime(.6f);
-            }
-            damage += 1f;
-            oldDamage = damage;
-        }
-        if (ability == 15)
-        {
-            if (slowDamage > 0)
-            {
-                slowDamage += .2f;
-            }
-            else
-            {
-                slowDamage += 1.2f;
-            }
-        }
-        if (ability == 16)
-        {
-            floater = true;
-            numUnavaliable.Add(16);
-        }
-        if (slowDamage > 0)
-        {
-            elderDamage = damage;
-        }
-        if (ability == 17)
-        {
-            projectile = true;
-            numUnavaliable.Add(17);
-        }
-        Debug.Log(ability);
-        Start();
-        if (playerIndex == 0)
-            p2PlayerMove.Start();
-        if (playerIndex == 1)
-            p1PlayerMove.Start();
+    }
+
+    private void UpdateRegen(float dt)
+    {
+        regenTimer -= dt;
+        if (regenTimer > 0f)
+            return;
+        regenTimer = RegenInterval;
+
+        float amount = stats.regen;
+        if (rb.velocity.x == 0f)
+            amount += stats.stillRegen;
+        Heal(amount);
+
+        if (stats.buildupRate > 0f)
+            damage *= stats.buildupRate;
+    }
+
+    private void UpdateFloatAndDash(float dt)
+    {
+        if (floating && rb.velocity.y <= 0f)
+            rb.velocity = new Vector2(rb.velocity.x, 0f);
+
+        // The first DashBurstTime seconds of the cooldown are the actual dash.
+        if (dashTimer > DashCooldown - DashBurstTime)
+            rb.velocity = new Vector2(DashSpeed * dashDirection, 0f);
+        dashTimer -= dt;
     }
 }
